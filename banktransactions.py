@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 
 import csv
 import datetime
@@ -28,6 +28,11 @@ def green(text):
 
 
 class Budget(object):
+    """
+    A class to map budgeted items to monthly dollar amounts.
+    This could probably be replaced by a defaultdict.
+
+    """
     def __init__(self):
         self.budget_data = {}
 
@@ -44,7 +49,13 @@ class Budget(object):
         return json.dumps(self.budget_data, indent=True)
 
 class Bucket(object):
-    # TODO: take data start and end at bucket creation to define partial bucket
+    """
+    A Class to represent a connection of transactions that were processed
+    during a particular period of time.  Adding a transaction to a bucket
+    updates net money in and per-expense-bucket totals
+
+    An optional budget can be defined.
+    """
     def __init__(self, start, end, description, budget=None):
         self.start = start
         if isinstance(start, datetime.datetime):
@@ -52,14 +63,12 @@ class Bucket(object):
         self.end = end
         if isinstance(end, datetime.datetime):
             self.end = end.date()
-        self.bucket_length_in_days = (self.end - self.start).days + 1
+        today = datetime.datetime.today().date()
+        if self.start <= today <= self.end:
+            self.partial = True
+        else:
+            self.partial = False
 
-        # If data does not cover entire bucket, declare this via set_transaction_start_end_dates()
-        self.partial_data = False 
-        self.data_start = self.start
-        self.data_end = self.end
-        self.data_length_in_days = (self.data_end - self.data_start).days + 1
-        
         self.description = description
         self.transactions = []
         self.money_in = 0
@@ -70,76 +79,89 @@ class Bucket(object):
     def set_budget(self, budget):
         self.budget = budget
 
-    def set_transaction_start_end_dates(self, start, end):
-        ''' declare when the first and last transactions are so as to detect partial buckets'''
-        if start > self.data_start:
-            self.data_start = start
-            self.partial_data = True
-        if end < self.data_end:
-            self.data_end = end
-            self.partial_data = True
-        self.data_length_in_days = (self.data_end - self.data_start).days + 1
-
-
     def add_transaction(self, transaction):
         self.transactions.append(transaction)
+        #TODO Why not just calculate these values when requested?
         if transaction.amount < 0:
             self.money_out -= transaction.amount
         if transaction.amount > 0:
             self.money_in += transaction.amount
         self.bucket_totals[transaction.classification] += transaction.amount
 
-    def contains(self, d):
-        if isinstance(d, datetime.datetime):
-            d = d.date()
-        return self.start <= d <= self.end
+    def contains(self, test_date):
+        """Return true if test_date falls inside this bucket's date range."""
+        if isinstance(test_date, datetime.datetime):
+            test_date = test_date.date()
+        return self.start <= test_date <= self.end
 
-    def data_coverage(self):
-        return self.data_length_in_days / float(self.bucket_length_in_days)
+    def get_transactions_by_classification(self, classification):
+        """Return a list of transactions that have no classification."""
+        return [txn for txn in self.transactions if txn.classification == classification]
 
-    def summary(self, report_unclassified=False):
-#        #TODO: Don't use today as a reference.. use start and end of data.
-#        today = datetime.datetime.today().date()
-#        days_into_range = (today - self.start).days
-#        if self.partial:
+    def summary(self, format='standard', report_unclassified=False):
+        """Print a summary of this bucket"""
+        today = datetime.datetime.today().date()
+        days_into_range = (today - self.start).days
+        length_in_days = (self.end - self.start).days + 1
+        if self.partial:
             #print('days:    {}'.format(length_in_days))
-#            percent =  (days_into_range / float(length_in_days))
+            percent =  (days_into_range / float(length_in_days))
             #print('percent:  {}'.format(int(100*percent)))
         print(self.description)
-        print('Dates:        {} - {}'.format(self.start, self.end))
-        print('Transactions: {}'.format(len(self.transactions)))
-        print('Money In:     {}'.format(self.money_in))
-        print('Money Out:    {}'.format(self.money_out))
-        print('Net:          {}'.format(self.money_in - self.money_out))
-
-        print('data coverage:{}%'.format(round(100*self.data_coverage())))
-        for category, total in sorted(self.bucket_totals.iteritems(), key=lambda(k,v):(v,k)):
+        print('Dates:            {} - {}'.format(self.start, self.end))
+        print('Transactions:     {}'.format(len(self.transactions)))
+        print('Money In:         {}'.format(int(self.money_in)))
+        print('Money Out:        {}'.format(int(self.money_out)))
+        print('Money In(Net):    {}'.format(int(self.money_in - self.money_out)))
+        print('')
+        #print(self.bucket_totals.items())
+        #TODO: port to python3.    for category, total in sorted(self.bucket_totals.items(), key=lambda(k,v):(v,k)):
+        #print(sorted(self.bucket_totals, key=self.bucket_totals.get, reverse=True).items)
+        sorted_keys = sorted(self.bucket_totals, key=self.bucket_totals.get)
+        for category, total in [(k, self.bucket_totals[k]) for k in sorted_keys]:
+        #for category, total in self.bucket_totals.items():
             #if monthly_budget[category] != 1:
             if self.budget and self.budget.get_budget(category) != 1:
                 #print 'budget exists for {}: {} per month'.format(category, monthly_budget[category])
                 #print 'daily budget is {}'.format(monthly_budget[category]/29.53)
                 #print '{} days times daily budget of {} = {}'.format(length_in_days, monthly_budget[category]/29.53, (monthly_budget[category]/29.53)* length_in_days)
-                budget_amount = (self.budget.get_budget(category)/29.53)* self.data_length_in_days
+                budget_amount = (self.budget.get_budget(category)/29.53)* length_in_days
             else:
                 budget_amount = 1
+            if self.partial:
+                #print('applying partial percent of {}'.format(percent))
+                budget_amount *= percent
             over_under = int(100*(-1*total - budget_amount)/budget_amount)
-            message = '{:20} {} (budget: {} {}%)'.format(category, total, int(budget_amount), over_under)
-            if budget_amount <= 1:
-                message = '{:20} {} (No budget defined)'.format(category, total)
-                print(message)
-            elif -1*total > budget_amount:
-                print(red(message))
-            elif -1*total <= budget_amount:
-                print(green(message))
-#        if report_unclassified:
-#            for transaction in self.transactions:
-#                if transaction.classification == 'unknown' and abs(transaction.amount) > 50:
-#                    print transaction
-        
+            if format=='standard':
+                message = '{:20} {} (budget: {} {}%)'.format(category, int(total), int(budget_amount), over_under)
+                if budget_amount <= 1:
+                    message = '{:20} {} (No budget defined)'.format(category, int(total))
+                    print(message)
+                elif -1*total > budget_amount:
+                    print(red(message))
+                elif -1*total <= budget_amount:
+                    print(green(message))
+            elif format=='csv':
+                print('{},{},{}'.format(self.description, category, int(total)))
+
+        # TODO: Split out from summary function.
+        if report_unclassified:
+            unclassified_transactions = [x for x in self.transactions if x.classification == 'unknown']
+            sorted_transactions = sorted(unclassified_transactions, key=lambda t: t.amount)
+            for txn in sorted_transactions:
+                print('Unclassified transaction: {:20} {}'.format(txn.party, txn.amount))
+
+            #for transaction in self.transactions:
+            #    if transaction.classification == 'unknown' and abs(transaction.amount) > 0:
+            #        print transaction
+
     def __repr__(self):
         return 'start: {} end: {} transactions: {}'.format(self.start, self.end, len(self.transactions))
 
 class Transaction(object):
+    """
+    A class to represent a line from a Westpac CSV Transaction export
+    """
     def __init__(self, date, party, amount, classification = 'unknown'):
         self.date = date
         self.party = party
@@ -151,30 +173,34 @@ class Transaction(object):
 
     def __repr__(self):
         return '{} {} ({}) {}'.format(self.date, self.classification, self.party, self.amount)
-        
+
 ##Date,Amount,Other Party,Description,Reference,Particulars,Analysis Code
 
 
 # Process transactions
 def transaction_reader(transaction_csv):
-    with open(transaction_csv, 'rb') as csvfile:
+    print(transaction_csv)
+    with open(transaction_csv, newline='') as csvfile:
         cvsreader = csv.reader(csvfile, delimiter=',')
         for row in cvsreader:
-            if not row or row[0] == 'Date':
-                continue
-            expense = row[2]
-            expense = re.sub('^[0-9]* ', '', expense)
-            expense = re.sub(' [0-9]*$', '', expense)
-            row[2] = expense
-    
-            yield Transaction(datetime.datetime.strptime( row[0], "%d/%m/%Y" ).date(), row[2], row[1])
+            try:
+                if row[0] == 'Date':
+                    continue
+                expense = row[2]
+                expense = re.sub('^[0-9]* ', '', expense)
+                expense = re.sub(' [0-9]*$', '', expense)
+                row[2] = expense
+                yield Transaction(datetime.datetime.strptime( row[0], "%d/%m/%Y" ).date(), row[2], row[1])
+            except:
+                print('Failed to parse transaction...')
+                print(row)
+                next
 
+#TODO: when using old csv, we will add normalized transactions after the most recent transaction!
+# Need to confine ourselves to the date range in the csv
 def normalize_expense(expense, buckets):
-    '''This is a two phase normalization function'''
-    # First, scan all buckets, locating the earliest and latest buckets with transactions
-    # Remove transactions for this expense
     total = 0
-    cumulative_bucket_coverage = 0
+#    buckets_with_this_expense = []
     first_sighting = None
     last_sighting = None
     for bucket in buckets:
@@ -194,92 +220,13 @@ def normalize_expense(expense, buckets):
                     bucket.money_in -= transaction.amount
                 bucket.bucket_totals[transaction.classification] -= transaction.amount
 #                buckets_with_this_expense.append(bucket)
-
-    # count bucket coverage for buckets between first and last sighting
+    # count buckets between first and last sighting
+    normalized_bucket_count = 0
     for bucket in buckets:
-        if first_sighting and last_sighting and bucket.start >= first_sighting and bucket.end <= last_sighting:
-            cumulative_bucket_coverage += bucket.data_coverage()
-            print('adding {} to cumulative bucket coverage.'.format(bucket.data_coverage()))
-
-    #average_cost = round(total / float(normalized_bucket_count), 2)
-    # add synthetic transactions with weights according to data coverage of each bucket
+        if first_sighting <= bucket.start and last_sighting >= bucket.end:
+            normalized_bucket_count += 1
+    average_cost = round(total / float(normalized_bucket_count), 2)
     for bucket in buckets:
         if first_sighting <= bucket.start <= bucket.end <= last_sighting:
-            bucket.add_transaction(Transaction(bucket.start, 'TODO', round((total / float(cumulative_bucket_coverage))*bucket.data_coverage() , 2), expense))
-
-def _quarter_from_date(d):
-    ''' Given a date, return which quarter it belongs to '''
-    months_to_quarter = {tuple([1,2,3]): 1, tuple([4,5,6]): 2, tuple([7,8,9]): 3, tuple([10,11,12]): 4}
-
-    # we do replacements to let datetime take care of leap years.
-    for months, quarter in months_to_quarter.items():
-        if d.month in months:
-#            print('found that month {} is in quarter {}'.format(d.month, quarter))
-            start_date = d.replace(month=1 + (quarter-1)*3, day=1)
-#            print('quarter start: {}'.format(start_date))
-            if d.month < 10:
-                # BUG: can't just replace month
-                #end_date = d.replace(month=1 + quarter*3) - datetime.timedelta(days=1)
-                end_date = d.replace(month=1 + quarter*3, day=1) - datetime.timedelta(days=1)
-#                print('quarter end: {}'.format(end_date))
-            else:
-                end_date = d.replace(month=12, day=31)
-            return (quarter, start_date, end_date)
-
-
-def generate_quarterly_buckets2(data_start, data_end):
-    previous_quarter_map = {}
-    buckets = []
-    quarter, start_date, end_date = _quarter_from_date(data_end)
-    description = 'Quarter :     Q{} {}'.format(quarter, start_date.year)
-    buckets.append(Bucket(start_date, end_date, description))
-    # go back in time generating buckets until we generate a bucket that won't include any data
-    while start_date > data_start:
-        quarter, start_date, end_date = _quarter_from_date(start_date - datetime.timedelta(days=1))
-        description = 'Quarter :     Q{} {}'.format(quarter, start_date.year)
-        buckets.append(Bucket(start_date, end_date, description))
-    return buckets
-
-def _month_from_date(d):
-    ''' Given a date, return which month it belongs to '''
-    months_to_quarter = {tuple([1,2,3]): 1, tuple([4,5,6]): 2, tuple([7,8,9]): 3, tuple([10,11,12]): 4}
-
-    start = d.replace(day=1)
-    if start.month < 12:
-        end = start.replace(month=start.month+1) - datetime.timedelta(days=1)
-    else:
-        end = date(year=start.year+1, month=1, day=1) - datetime.timedelta(days=1)
-    month = start.strftime("%B")
-    return month, start, end
-
-def generate_monthly_buckets(data_start, data_end):
-    buckets = []
-    #TODO: Don't use today as a reference.. use start and end of data.
-    #today = datetime.datetime(year=2018, month=12, day=5)
-    month, start_date, end_date = _month_from_date(data_end)
-    print data_end
-    description = 'Month:        {} {}'.format(month, start_date.year)
-    buckets.append(Bucket(start_date, end_date, description))
-    # go back in time generating buckets until we generate a bucket that won't include any data
-    while start_date > data_start:
-        month, start_date, end_date = _month_from_date(start_date - datetime.timedelta(days=1))
-        description = 'Month:        {} {}'.format(month, start_date.year)
-        buckets.append(Bucket(start_date, end_date, description))
-    return buckets
-
-
-# TODO: Broken
-def generate_weekly_buckets():
-    #TODO: Don't use today as a reference.. use start and end of data.
-    today = datetime.datetime.today()
-    weekday = today.weekday()
-    week_end_delta = datetime.timedelta(days=6-weekday)
-    end_of_week = today + week_end_delta
-    prev_week = ''
-    buckets = []
-    for i in range(12):
-        prev_week = end_of_week - datetime.timedelta(weeks=1)
-        buckets.append(Bucket(prev_week, end_of_week-datetime.timedelta(days=1), ''))
-        end_of_week = prev_week
-    return buckets
+            bucket.add_transaction(Transaction(bucket.start, 'TODO', average_cost, expense))
 
